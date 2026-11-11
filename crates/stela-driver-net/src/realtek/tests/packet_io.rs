@@ -32,26 +32,23 @@ fn modelled(registers: &mut [u32], memory: &mut [u64], signalled: bool) -> Realt
     }
 }
 
-/// An empty receive acknowledges the pending receive and link events,
-/// leaving the others, so the next one raises the vector again.
+/// An empty receive acknowledges every pending event, as Linux's
+/// `rtl_ack_events` of the whole status does: the receive ring's exhaustion
+/// (RxDescUnavail, bit 4) and the receive FIFO's overflow (RxFIFOOver,
+/// bit 6) among them, so a receiver that ran out starts again.
 #[test]
-fn empty_receive_acknowledges_the_signalled_events() {
+fn empty_receive_acknowledges_every_pending_event() {
     for signalled in [false, true] {
         let mut registers = vec![0u32; 64];
         let mut memory = vec![0u64; 262_144];
-        let pending = RX_OK | LINK_CHANGE | 1 << 2;
+        let pending = RX_OK | LINK_CHANGE | 1 << 2 | 1 << 4 | 1 << 6;
         registers[INTERRUPT_STATUS / 4] = u32::from(pending) << 16;
         let mut net = modelled(&mut registers, &mut memory, signalled);
         net.receive.initialize(true);
         assert_eq!(net.signals(), signalled);
         assert_eq!(net.receive(), Ok(None));
         let written = (registers[INTERRUPT_STATUS / 4] >> 16) as u16;
-        let acknowledged = if signalled {
-            RX_OK | LINK_CHANGE
-        } else {
-            pending
-        };
-        assert_eq!(written, acknowledged);
+        assert_eq!(written, pending);
     }
 }
 
