@@ -19,7 +19,7 @@ The test machine has a Ryzen 7 5700X, an ASUS TUF GAMING B450-PLUS II and a Rade
 
 The work is on the [`amd-gpu-0.2`](https://github.com/Palayop7239/Stela/tree/amd-gpu-0.2) branch, which is based on v0.2.0.
 
-These fixes came out of this machine and were sent upstream:
+These fixes came out of this machine and were merged upstream:
 - [#5](https://github.com/tylertms/Stela/pull/5): the Realtek RTL8168H stopped receiving partway through a download
 - [#6](https://github.com/tylertms/Stela/pull/6): an RTL8111H was refused as a fiber (TBI) adapter
 - [#7](https://github.com/tylertms/Stela/pull/7): SPTM panicked after a warm restart
