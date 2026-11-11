@@ -488,12 +488,11 @@ fn prepare_pcie_link<C: ConfigSpace>(
     Ok(control)
 }
 
-/// PHYstatus bit 7, which reports a TBI (fiber) interface only on the 8169
-/// family, versions 02..06: older Linux read it as TBI only there, and the
-/// pinned source has dropped TBI altogether. 8168 chips set it with their
+/// Whether the chip runs its TBI (fiber) interface, which this driver does
+/// not: PHYstatus bit 7 says so only on the 8169 family, versions 02..06.
+/// Older Linux read it as TBI only there (`rtl_tbi_enabled`), and the pinned
+/// source has dropped TBI altogether. 8168 chips set the bit with their
 /// copper PHY (an ASUS board's RTL8111H does), so it is no refusal there.
-const TBI_ENABLE: u8 = 0x80;
-
 fn tbi_mode(revision: Revision, phy_status: u8) -> bool {
     revision.version <= 6 && phy_status & TBI_ENABLE != 0
 }
