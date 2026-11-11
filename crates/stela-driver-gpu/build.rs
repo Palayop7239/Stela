@@ -1,3 +1,6 @@
+#[cfg(feature = "amdgpu-port")]
+#[path = "build/amdgpu.rs"]
+mod amdgpu;
 #[cfg(feature = "nouveau-port")]
 #[path = "build/kbuild.rs"]
 mod kbuild;
@@ -32,6 +35,9 @@ fn main() {
     linux.tests(&mut tests);
     #[cfg(feature = "nouveau-port")]
     let mut linux = linux;
+    // Before nouveau's port, which takes the environment's captured units.
+    #[cfg(feature = "amdgpu-port")]
+    amdgpu::port(&linux);
     #[cfg(feature = "nouveau-port")]
     nouveau::port(&mut linux);
     #[cfg(feature = "linux-kernel")]

@@ -24,13 +24,13 @@ const MODULE: Module<'static> = Module {
 const COMPOSITES: [&str; 1] = ["nouveau"];
 
 /// What the compiler itself calls, which every platform's runtime supplies.
-const RUNTIME: [&str; 4] = ["memcpy", "memmove", "memset", "memcmp"];
+pub(super) const RUNTIME: [&str; 4] = ["memcpy", "memmove", "memset", "memcmp"];
 /// The prefix of what Stela's Rust side exports to the environment.
-const PLATFORM: &str = "stela_linux_";
+pub(super) const PLATFORM: &str = "stela_linux_";
 /// The prefix of the hosted test harness (`stela/test.h`). Only a hosted
 /// environment built with its source fixtures reaches it, from fixture code
 /// sharing archive members with the services nouveau imports.
-const HARNESS: &str = "stela_test_";
+pub(super) const HARNESS: &str = "stela_test_";
 
 /// The kernel services the composites import that Stela's Linux environment
 /// lacks, or defines only as a trap, by service. Building fails when the
@@ -248,12 +248,12 @@ fn check_imports(port: &Path, environment: &[&Path]) {
 }
 
 /// What one archive member defines and imports.
-struct Member {
-    defined: BTreeSet<String>,
-    imported: BTreeSet<String>,
+pub(super) struct Member {
+    pub(super) defined: BTreeSet<String>,
+    pub(super) imported: BTreeSet<String>,
 }
 
-fn members(archive: &Path) -> Vec<Member> {
+pub(super) fn members(archive: &Path) -> Vec<Member> {
     let data = fs::read(archive).unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
     let archive = ArchiveFile::parse(&*data).expect("an archive");
     archive
@@ -281,7 +281,7 @@ fn members(archive: &Path) -> Vec<Member> {
 /// What the environment defines without serving: functions that trap
 /// (`STELA_UNSUPPORTED`), placeholder objects (`STELA_UNSUPPORTED_OBJECT`)
 /// and functions that report themselves unsupported and fail.
-fn traps() -> BTreeSet<String> {
+pub(super) fn traps() -> BTreeSet<String> {
     let mut traps = BTreeSet::new();
     for source in stela_c_build::linux_build::sources(KERNEL)
         .into_iter()

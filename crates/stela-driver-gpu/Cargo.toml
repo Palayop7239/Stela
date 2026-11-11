@@ -21,6 +21,10 @@ linux-kernel = ["dep:cc", "dep:stela-c-build", "stela-c-build/linux", "dep:stela
 # nouveau's hardware resource manager (NVKM), compiled unchanged; it reaches
 # no device until the kernel services it imports are supplied.
 nouveau-port = ["linux-kernel", "stela-c-build/linux-registry"]
+# amdgpu's composite for headless RDNA bring-up, compiled unchanged over the
+# DRM environment nouveau-port builds and surveyed: not yet linked, it reaches
+# no device until the kernel services it imports are supplied.
+amdgpu-port = ["nouveau-port"]
 # Stela's Metal device over the internal Vulkan boundary; no Vulkan driver.
 metal = ["dep:stela-contracts"]
 # The Metal device's native backend over a loaded Vulkan driver (NVK).

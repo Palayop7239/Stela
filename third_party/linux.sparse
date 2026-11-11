@@ -1,10 +1,12 @@
-# nouveau, shared DRM helpers, ACPICA and kernel headers; not a
+# nouveau, amdgpu, shared DRM helpers, ACPICA and kernel headers; not a
 # buildable kernel tree. netfilter's headers differ only in case, which a
 # case-insensitive file system cannot check out.
 /drivers/acpi/acpica/
 /drivers/base/map.c
 /drivers/base/property.c
 /drivers/gpu/drm/nouveau/
+/drivers/gpu/drm/amd/
+/drivers/gpu/buddy.c
 /drivers/gpu/drm/display/
 /drivers/gpu/drm/ttm/
 /drivers/gpu/drm/scheduler/

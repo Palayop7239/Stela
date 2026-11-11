@@ -33,6 +33,9 @@ diagnostics = ["stela-drivers/irq-diagnostics"]
 native-profile = ["stela-soc/native-profile", "stela-engine/native-profile"]
 # NVK, NIR and NAK in the image, from `cargo xtask gpu nvk`.
 nvk = ["dep:stela-mesa", "stela-drivers/metal-linked"]
+# amdgpu compiled and surveyed in the build (not linked; see
+# stela-driver-gpu's amdgpu-port).
+amdgpu = ["stela-drivers/amdgpu-port"]
 
 [dependencies]
 stela-linux = { path = "../stela-linux", features = ["kernel"] }
