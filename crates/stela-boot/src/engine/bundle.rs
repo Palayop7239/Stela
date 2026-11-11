@@ -691,7 +691,6 @@ fn load_named<'a>(
         nvram,
     };
     trace_record(host, &mut trace, *b"SLOD")?;
-    clear_carveouts(host, &manifest.carveouts)?;
     let image = verified
         .load(&machine, &mut entropy, &mut |pa, data| {
             host.write_ram(pa, data)
@@ -712,6 +711,16 @@ fn load_named<'a>(
             trace.bytes().len()
         ));
     }
+    // The load blanked them before it wrote the regions.
+    output::arguments(format_args!(
+        "CARVEOUTS blank count={} bytes={:#x}\n",
+        manifest.carveouts.len(),
+        manifest
+            .carveouts
+            .iter()
+            .map(|carveout| carveout.bytes)
+            .sum::<u64>()
+    ));
     for region in &image.regions {
         output::arguments(format_args!(
             "REGION {} pa={:#x} bytes={:#x} memory={:#x}\n",
@@ -737,44 +746,6 @@ fn load_named<'a>(
             .map(|region| (region.base, region.bytes)),
         core_locks,
     })
-}
-
-/// Blank iBoot's carveouts before the load writes into them (the boot
-/// manifest goes into the loaded-object carveout). Guest DRAM is backed by
-/// whatever the host's free RAM held: a warm restart leaves the last OS's
-/// data there, memory training its patterns. Fresh state is read from
-/// carveouts as if iBoot had left it, such as the GPU's TTBAT
-/// (`gpu-region`): SPTM's `sptm_uat_set_ctx_id` takes a slot whose stale
-/// words have the valid bit set as taken and panics
-/// (`VIOLATION_UAT_ILLEGAL_SET_CTX_ID`).
-fn clear_carveouts(
-    host: &mut impl Host,
-    carveouts: &[stela_formats::boot_bundle::schema::Placed],
-) -> Result<()> {
-    const CHUNK: usize = 64 << 10;
-    let zeros = vec![0u8; CHUNK];
-    let mut total = 0u64;
-    for carveout in carveouts {
-        let mut at = 0u64;
-        while at < carveout.bytes {
-            let length = (carveout.bytes - at).min(CHUNK as u64) as usize;
-            let pa = carveout.base + at;
-            if !host.write_ram(pa, &zeros[..length]) {
-                return Err(refuse!(
-                    "carveout {id:#x} at {pa:#x} is not guest RAM",
-                    id = carveout.id,
-                    pa
-                ));
-            }
-            at += length as u64;
-        }
-        total += carveout.bytes;
-    }
-    output::arguments(format_args!(
-        "CARVEOUTS cleared count={} bytes={total:#x}\n",
-        carveouts.len()
-    ));
-    Ok(())
 }
 
 /// Observe the same 24 MHz counter the first guest slice reads. No guest
