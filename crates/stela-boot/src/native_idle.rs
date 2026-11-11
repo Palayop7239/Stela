@@ -297,7 +297,8 @@ pub(crate) unsafe fn wait_with(budget_us: impl FnOnce() -> Option<u64>, ring: Op
         _ => unsafe { asm!("sti", "hlt", "cli", options(nostack)) },
     }
     if let (Some(admission), Some(began)) = (admission, began) {
-        let hz = crate::firmware::tsc_hz();
+        // Not `firmware::tsc_hz`: the engine's image waits here too.
+        let hz = crate::output::clock_hz();
         if hz != 0 {
             let us = u128::from(rdtsc().wrapping_sub(began)) * 1_000_000 / u128::from(hz);
             // SAFETY: as above; the interrupt that ended the wait was taken.

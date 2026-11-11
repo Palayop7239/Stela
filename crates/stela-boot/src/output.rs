@@ -551,6 +551,14 @@ pub fn set_clock(tsc_hz: u64) {
     TSC_HZ.store(tsc_hz, Ordering::Relaxed);
 }
 
+/// The rate [`set_clock`] gave, or 0 before it. Code the engine's image also
+/// runs reads the rate here: that image is a copy taken before
+/// `firmware::tsc_hz` cached it, so the call would search the firmware's
+/// tables again, through the UEFI system table the engine's roots do not map.
+pub fn clock_hz() -> u64 {
+    TSC_HZ.load(Ordering::Relaxed)
+}
+
 /// `[  12.345] `: the seconds since the PC started, as the kernel's own
 /// lines show them; nothing before the counter's rate is known.
 fn stamp(record: &mut Pending<[u8; PENDING_BYTES]>) {
