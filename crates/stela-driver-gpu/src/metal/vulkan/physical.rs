@@ -116,6 +116,9 @@ pub struct Limits {
     pub subgroup_size: u32,
     pub min_subgroup_size: u32,
     pub max_subgroup_size: u32,
+    /// `requiredSubgroupSizeStages`: the stages whose pipelines may require
+    /// a subgroup size.
+    pub required_subgroup_size_stages: ShaderStages,
     pub subgroup_supported_stages: ShaderStages,
     pub subgroup_supported_operations: SubgroupFeatures,
     pub subgroup_quad_operations_in_all_stages: bool,

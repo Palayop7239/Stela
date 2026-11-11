@@ -359,6 +359,12 @@ impl Link for Adapter {
             _ => None,
         }
     }
+    fn diagnostic(&mut self) -> alloc::string::String {
+        match self {
+            Self::Realtek(device) => device.diagnostic(),
+            _ => alloc::string::String::new(),
+        }
+    }
     fn transmit(&mut self, frame: &[u8]) -> Result<(), LinkError> {
         match self {
             Self::Virtio(device) => device.transmit(frame),
@@ -591,9 +597,20 @@ pub struct Devices {
     /// Storage, network, audio and USB functions no driver here takes, with
     /// their class and why.
     pub unsupported: Vec<(Address, [u8; 3], &'static str)>,
+    /// Every PCI function the scan found, with its class, whether a driver
+    /// attached it or not, so a boot can name the network adapters or USB
+    /// controllers that did not come up.
+    pub scanned: Vec<(Address, [u8; 3])>,
 }
 
 impl Devices {
+    /// Whether the scan found `address` with a class `wanted` begins.
+    pub fn scanned_as(&self, address: Address, wanted: &[u8]) -> bool {
+        self.scanned
+            .iter()
+            .any(|(at, class)| *at == address && class.starts_with(wanted))
+    }
+
     /// Failures from attempted native vendor initialization, USB and PCIe,
     /// and USB controllers no vendor setup here takes, each named once: no
     /// consumer runs them, so they stay off.
@@ -983,6 +1000,7 @@ pub unsafe fn probe_with_provider(
     for found in scanned {
         for mut function in found {
             let address = function.address;
+            devices.scanned.push((address, function.class));
             // A network adapter joins the links, or its failure is recorded.
             macro_rules! attach_link {
                 ($attached:expr, $variant:path) => {{

@@ -639,6 +639,10 @@ fn limits(
         subgroup_size: v11.subgroup_size,
         min_subgroup_size: v13.min_subgroup_size,
         max_subgroup_size: v13.max_subgroup_size,
+        required_subgroup_size_stages: known!(
+            ShaderStages,
+            v13.required_subgroup_size_stages.as_raw()
+        ),
         subgroup_supported_stages: known!(ShaderStages, v11.subgroup_supported_stages.as_raw()),
         subgroup_supported_operations: known!(
             SubgroupFeatures,

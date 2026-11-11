@@ -1091,6 +1091,71 @@ fn indirect_render_pipelines_read_each_samplers_filter_once_admitted() {
 }
 
 #[test]
+fn radv_render_pipelines_pin_wave32_and_join_no_execution_set() {
+    use crate::metal::amd::{Chip as AmdChip, GcVersion, fixture::radv};
+    let chip = AmdChip::find(GcVersion::new(10, 3, 4)).unwrap();
+    let mut physical = radv(chip, 8 << 30);
+    // The two backend requirements RADV lacks today.
+    physical.features.unified_image_layouts = true;
+    physical.features.dynamic_primitive_topology_unrestricted = true;
+    let mut backend = MockBackend::new();
+    backend.physical = Some(physical);
+    let mut device = device_on(backend);
+    let vertex = device.new_function(LIBRARY, "vertex", Some(&[])).unwrap();
+    let fragment = device.new_function(LIBRARY, "fragment", Some(&[])).unwrap();
+    let id = device
+        .new_render_pipeline(&RenderPipelineRequest {
+            vertex_function: vertex,
+            fragment_function: Some(fragment),
+            vertex_descriptor: None,
+            targets: color_targets(),
+            input_primitive_topology: PrimitiveTopologyClass::Triangle,
+            max_vertex_amplification_count: 1,
+            tessellation: Default::default(),
+            vertex_linked_functions: LinkedFunctions::default(),
+            fragment_linked_functions: LinkedFunctions::default(),
+            support_indirect_command_buffers: true,
+            archives: Default::default(),
+        })
+        .unwrap();
+    let info = device.backend().graphics.last().unwrap();
+    assert_eq!(info.required_subgroup_size, 32);
+    assert_eq!(
+        info.required_subgroup_size_stages,
+        ShaderStages::COMPUTE | ShaderStages::FRAGMENT | ShaderStages::TASK | ShaderStages::MESH
+    );
+    // RADV's execution sets switch only compute pipelines.
+    assert!(!info.indirect_bindable);
+    assert!(device.backend().execution_sets.is_empty());
+    assert_eq!(device.render_pipeline_resource_id(id).unwrap(), 0);
+}
+
+#[test]
+fn nvk_render_pipelines_require_no_subgroup_size() {
+    let mut device = device();
+    let vertex = device.new_function(LIBRARY, "vertex", Some(&[])).unwrap();
+    let fragment = device.new_function(LIBRARY, "fragment", Some(&[])).unwrap();
+    device
+        .new_render_pipeline(&RenderPipelineRequest {
+            vertex_function: vertex,
+            fragment_function: Some(fragment),
+            vertex_descriptor: None,
+            targets: color_targets(),
+            input_primitive_topology: PrimitiveTopologyClass::Triangle,
+            max_vertex_amplification_count: 1,
+            tessellation: Default::default(),
+            vertex_linked_functions: LinkedFunctions::default(),
+            fragment_linked_functions: LinkedFunctions::default(),
+            support_indirect_command_buffers: false,
+            archives: Default::default(),
+        })
+        .unwrap();
+    let info = device.backend().graphics.last().unwrap();
+    assert_eq!(info.required_subgroup_size, 0);
+    assert_eq!(info.required_subgroup_size_stages, ShaderStages::EMPTY);
+}
+
+#[test]
 fn indirect_pipelines_share_execution_sets_by_state() {
     let mut device = device();
     let vertex = device.new_function(LIBRARY, "vertex", Some(&[])).unwrap();

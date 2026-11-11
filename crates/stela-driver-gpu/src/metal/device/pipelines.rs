@@ -13,6 +13,7 @@ use super::{
 };
 use crate::metal::{
     abi::{ConversionRounding, DataType, FunctionType, PrimitiveTopologyClass},
+    capabilities,
     command_buffer::{BoundPipeline, ComputePipelineState, IndirectCompute, RenderPipelineState},
     error::{Error, Result, ensure, require},
     library::{self, Function, Header, Library},
@@ -1219,8 +1220,10 @@ impl<B: Backend, C: Compiler> Device<B, C> {
         let vertex_linked = self.link(&request.vertex_linked_functions, true)?;
         let fragment_linked = self.link(&request.fragment_linked_functions, true)?;
         let linkings = [&vertex_linked.linking, &fragment_linked.linking];
-        let generated = self.backend.physical_device().limits.generated_commands;
-        let indirect_bindable = request.support_indirect_command_buffers && generated.is_some();
+        // A driver that switches no render pipelines from an execution set
+        // (RADV) gets none to switch.
+        let indirect_bindable = request.support_indirect_command_buffers
+            && capabilities::indirect_render_pipelines(self.backend.physical_device());
         // GPU-encoded commands bind no variants: the pipeline reads each
         // sampler's filter once its process has bicubic samplers.
         let bicubic = if indirect_bindable {
@@ -1382,11 +1385,16 @@ impl<B: Backend, C: Compiler> Device<B, C> {
             ),
         };
         // The driver compiles the NIR into the pipeline, which outlives it.
+        let subgroups = capabilities::graphics_subgroups(self.backend.physical_device());
         let start = self.timing.now();
         let created =
             pipeline::render_pipeline(&self.capabilities, &descriptor).and_then(|mut plan| {
                 let start = self.timing.since(Phase::PipelinePlan, start);
                 plan.info.indirect_bindable = indirect_bindable;
+                (
+                    plan.info.required_subgroup_size,
+                    plan.info.required_subgroup_size_stages,
+                ) = subgroups;
                 let pipeline = self.create_from(sources, |backend, source| {
                     plan.info.source = source;
                     backend.create_graphics_pipeline(&plan.info)
@@ -1674,6 +1682,10 @@ impl<B: Backend, C: Compiler> Device<B, C> {
         }
         stages.extend(info.stages);
         info.stages = stages;
+        (
+            info.required_subgroup_size,
+            info.required_subgroup_size_stages,
+        ) = capabilities::graphics_subgroups(self.backend.physical_device());
         let pipeline = self.create_from(&sources, |backend, source| {
             info.source = source;
             backend.create_graphics_pipeline(&info)

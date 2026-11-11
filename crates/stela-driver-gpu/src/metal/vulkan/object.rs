@@ -215,6 +215,11 @@ pub struct GraphicsPipelineInfo {
     /// `VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT`: execution sets may
     /// hold the pipeline.
     pub indirect_bindable: bool,
+    /// `VkPipelineShaderStageRequiredSubgroupSizeCreateInfo` for the stages
+    /// in `required_subgroup_size_stages`; zero leaves every stage at the
+    /// driver's choice.
+    pub required_subgroup_size: u32,
+    pub required_subgroup_size_stages: ShaderStages,
 }
 
 /// `VkComputePipelineCreateInfo` over the device's single pipeline layout.

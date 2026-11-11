@@ -378,11 +378,29 @@ pub(super) fn graphics_pipeline<T>(
         .iter()
         .map(|&(_, code)| NirStage::new(code))
         .collect();
+    let mut subgroups: Vec<_> = info
+        .stages
+        .iter()
+        .map(|_| {
+            vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo::default()
+                .required_subgroup_size(info.required_subgroup_size)
+        })
+        .collect();
     let stages: Vec<_> = info
         .stages
         .iter()
         .zip(&nirs)
-        .map(|(&(shader, _), nir)| stage(shader, nir))
+        .zip(subgroups.iter_mut())
+        .map(|((&(shader, _), nir), subgroup)| {
+            let created = stage(shader, nir);
+            if info.required_subgroup_size != 0
+                && info.required_subgroup_size_stages.contains(shader)
+            {
+                created.push_next(subgroup)
+            } else {
+                created
+            }
+        })
         .collect();
     let mesh = info
         .stages

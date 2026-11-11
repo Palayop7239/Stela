@@ -925,6 +925,8 @@ fn targets(
             dynamic_states,
             source: PipelineSource::Compiled,
             indirect_bindable: false,
+            required_subgroup_size: 0,
+            required_subgroup_size_stages: ShaderStages::EMPTY,
         },
         topology_class: PrimitiveTopologyClass::Unspecified,
         amplification_count: 1,

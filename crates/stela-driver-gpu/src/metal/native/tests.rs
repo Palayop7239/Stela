@@ -237,6 +237,8 @@ fn pipeline(
         dynamic_states: vec![],
         source: Default::default(),
         indirect_bindable: false,
+        required_subgroup_size: 0,
+        required_subgroup_size_stages: ShaderStages::EMPTY,
     }
 }
 
@@ -286,6 +288,41 @@ fn mesh_pipelines_have_no_vertex_input() {
         let s_type = unsafe { *stage.p_next.cast::<vk::StructureType>() };
         assert!(s_type == objects::NirStage::STRUCTURE_TYPE);
         assert_eq!(nir.nir(), 1);
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn pinned_stages_chain_their_subgroup_size_before_their_nir() {
+    let layout = vk::PipelineLayout::null();
+    let code = ShaderCode(1);
+    let mut info = pipeline(
+        &[(ShaderStages::VERTEX, code), (ShaderStages::FRAGMENT, code)],
+        PrimitiveTopology::TriangleList,
+    );
+    // RADV from GFX10: vertex shaders keep the driver's wave size.
+    info.required_subgroup_size = 32;
+    info.required_subgroup_size_stages =
+        ShaderStages::COMPUTE | ShaderStages::FRAGMENT | ShaderStages::TASK | ShaderStages::MESH;
+    objects::graphics_pipeline(&info, layout, |create| {
+        // SAFETY: the stage array has two entries.
+        let stages = unsafe { core::slice::from_raw_parts(create.p_stages, 2) };
+        // SAFETY: every chained structure starts with its type.
+        let s_type = |next: *const core::ffi::c_void| unsafe { *next.cast::<vk::StructureType>() };
+        assert!(s_type(stages[0].p_next) == objects::NirStage::STRUCTURE_TYPE);
+        assert!(
+            s_type(stages[1].p_next)
+                == vk::StructureType::PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO
+        );
+        // SAFETY: the type above names the structure.
+        let subgroup = unsafe {
+            &*stages[1]
+                .p_next
+                .cast::<vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo<'_>>()
+        };
+        assert_eq!(subgroup.required_subgroup_size, 32);
+        assert!(s_type(subgroup.p_next) == objects::NirStage::STRUCTURE_TYPE);
         Ok(())
     })
     .unwrap();

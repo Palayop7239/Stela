@@ -40,6 +40,15 @@ pub fn none() -> String {
     format!("this PC has no NVIDIA GPU: Stela needs {SUPPORTED}")
 }
 
+/// The screen line for a PC without an NVIDIA GPU whose AMD GPU `device` sits
+/// at PCI `address`.
+pub fn amd(address: &str, device: u16) -> String {
+    format!(
+        "the AMD GPU at {address} (device {device:04x}) cannot run Stela yet: AMD support is in \
+         development, and for now Stela needs {SUPPORTED}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +78,16 @@ mod tests {
              GeForce GTX 16 or RTX 20, 30, 40 or 50 series GPU"
         );
         assert!(none().starts_with("this PC has no NVIDIA GPU: Stela needs"));
+    }
+
+    #[test]
+    fn an_amd_gpu_is_named_as_not_yet_supported() {
+        // A Radeon RX 6650 XT.
+        assert_eq!(
+            amd("03:00.0", 0x73ef),
+            "the AMD GPU at 03:00.0 (device 73ef) cannot run Stela yet: AMD support is in \
+             development, and for now Stela needs an NVIDIA GeForce GTX 16 or RTX 20, 30, 40 \
+             or 50 series GPU"
+        );
     }
 }

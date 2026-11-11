@@ -174,6 +174,8 @@ fn limits() -> Limits {
         subgroup_size: 32,
         min_subgroup_size: 32,
         max_subgroup_size: 32,
+        // NVK's subgroups are always 32 wide, and it names no stage.
+        required_subgroup_size_stages: ShaderStages::EMPTY,
         subgroup_supported_stages: ShaderStages::KNOWN,
         subgroup_supported_operations: SubgroupFeatures::KNOWN,
         subgroup_quad_operations_in_all_stages: true,
@@ -339,7 +341,7 @@ fn features(chip: &Chip) -> Features {
     }
 }
 
-fn formats() -> FormatTable {
+pub(crate) fn formats() -> FormatTable {
     let mut table = FormatTable::default();
     let transfer = F::TRANSFER_SRC | F::TRANSFER_DST | F::BLIT_SRC | F::HOST_IMAGE_TRANSFER;
     for format in PixelFormat::ALL {

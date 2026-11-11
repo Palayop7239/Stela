@@ -14,6 +14,7 @@ pub mod metal;
 #[cfg(feature = "nouveau-port")]
 pub mod nouveau;
 
+pub mod amdgpu_chip;
 pub mod cold;
 pub mod nouveau_chip;
 
@@ -94,7 +95,7 @@ impl Adapter {
     pub fn unavailable_reason(&self) -> &'static str {
         match self.vendor {
             Vendor::Nvidia => "NVIDIA requires nouveau/GSP binding and an NVK-enabled image",
-            Vendor::Amd => "AMDGPU is not ported to Stela",
+            Vendor::Amd => "amdgpu and RADV are not ported to Stela yet",
             Vendor::Intel => "Intel i915/xe are not ported to Stela",
             Vendor::Other(_) => "no Stela GPU backend for this PCI vendor",
         }

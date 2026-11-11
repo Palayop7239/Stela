@@ -21,7 +21,7 @@ use super::{
     resource::{raw_rendered, raw_texel_format},
     vertex::VertexFormat,
     vulkan::{
-        FormatFeatures, PhysicalDeviceType, ResolveModes, SampleCounts,
+        FormatFeatures, PhysicalDeviceType, ResolveModes, SampleCounts, ShaderStages,
         physical::{Features, FormatSupport, PhysicalDevice},
     },
 };
@@ -626,6 +626,54 @@ pub fn fragment_tests(device: &PhysicalDevice) -> bool {
     device.features.fragment_shader_pixel_interlock && depth_stencil_copies(device)
 }
 
+/// Whether device-generated commands on `device` switch render pipelines
+/// from an execution set, as the commands of Metal's indirect command
+/// buffers do. NVK switches every stage but geometry; RADV switches only
+/// compute pipelines.
+pub fn indirect_render_pipelines(device: &PhysicalDevice) -> bool {
+    device.limits.generated_commands.is_some_and(|limits| {
+        limits
+            .pipeline_stages
+            .contains(ShaderStages::VERTEX | ShaderStages::FRAGMENT)
+    })
+}
+
+/// The SIMD-group width of every Apple GPU, which Metal code commonly
+/// assumes in its shuffles and reductions.
+pub const APPLE_SIMD_WIDTH: u32 = 32;
+
+/// Whether `device` runs pipelines at [`APPLE_SIMD_WIDTH`]: its only
+/// subgroup size, or one inside its range that pipelines can require. NVK's
+/// subgroups are always 32 wide; RADV's default to 64 and take 32 when asked
+/// from GFX10 on.
+pub fn apple_simd_width_runs(device: &PhysicalDevice) -> bool {
+    let limits = &device.limits;
+    let fixed = limits.min_subgroup_size == limits.max_subgroup_size;
+    (limits.min_subgroup_size..=limits.max_subgroup_size).contains(&APPLE_SIMD_WIDTH)
+        && (fixed || device.features.subgroup_size_control)
+}
+
+/// The subgroup size pipelines on `device` require so that their SIMD groups
+/// are [`APPLE_SIMD_WIDTH`] wide, or zero when the device has no choice.
+pub fn required_subgroup_size(device: &PhysicalDevice) -> u32 {
+    let limits = &device.limits;
+    if limits.min_subgroup_size != limits.max_subgroup_size && apple_simd_width_runs(device) {
+        APPLE_SIMD_WIDTH
+    } else {
+        0
+    }
+}
+
+/// The subgroup size render pipelines on `device` require and the stages
+/// that take it: RADV pins fragment, task and mesh shaders, while its vertex
+/// shaders keep the driver's wave size.
+pub fn graphics_subgroups(device: &PhysicalDevice) -> (u32, ShaderStages) {
+    match required_subgroup_size(device) {
+        0 => (0, ShaderStages::EMPTY),
+        size => (size, device.limits.required_subgroup_size_stages),
+    }
+}
+
 impl Derivation<'_> {
     fn cause(&self, requirement: &Requirement) -> Option<Cause> {
         if !requirement.driver {
@@ -897,6 +945,8 @@ impl Derivation<'_> {
             features.bresenham_lines && features.rectangular_lines,
         ));
 
+        let simd_width = self.check(driver("32-wide SIMD groups", apple_simd_width_runs(device)));
+
         let workgroup = limits.max_compute_work_group_size;
         let mesh_limits = limits.mesh.filter(|_| mesh);
         let limits_out = Limits {
@@ -906,7 +956,11 @@ impl Derivation<'_> {
                 depth: u64::from(workgroup[2]),
             },
             max_total_threads_per_threadgroup: u64::from(limits.max_compute_work_group_invocations),
-            thread_execution_width: u64::from(limits.max_subgroup_size),
+            thread_execution_width: u64::from(if simd_width {
+                APPLE_SIMD_WIDTH
+            } else {
+                limits.max_subgroup_size
+            }),
             max_threadgroup_memory_length: u64::from(limits.max_compute_shared_memory_size),
             max_buffer_length: limits
                 .max_buffer_size
@@ -1524,6 +1578,10 @@ impl Derivation<'_> {
                         "indirect command buffers",
                         features.conditional_rendering,
                         ApiFeatures::INDIRECT_COMMAND_BUFFERS,
+                    ),
+                    driver(
+                        "indirect render pipeline switching",
+                        indirect_render_pipelines(self.device),
                     ),
                     shader(
                         "GPU-encoded indirect commands",
