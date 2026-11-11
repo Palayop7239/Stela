@@ -281,7 +281,7 @@ impl Realtek {
             map_registers(handoff, bar, 0, bytes).map(|_| ())
         })?;
         admit_revision(function.device, pcie_link_control, revision)?;
-        if !revision.nbase() && device.read8(PHY_STATUS) & 0x80 != 0 {
+        if tbi_mode(revision, device.read8(PHY_STATUS)) {
             return Err(BlockError::Unsupported("Realtek TBI/fiber mode").into());
         }
         // rtl_alloc_irq keeps versions before 18 on INTx, which stays off.
@@ -486,6 +486,16 @@ fn prepare_pcie_link<C: ConfigSpace>(
         clock_request(function.config(), offset, false)?;
     }
     Ok(control)
+}
+
+/// PHYstatus bit 7, which reports a TBI (fiber) interface only on the 8169
+/// family, versions 02..06: older Linux read it as TBI only there, and the
+/// pinned source has dropped TBI altogether. 8168 chips set it with their
+/// copper PHY (an ASUS board's RTL8111H does), so it is no refusal there.
+const TBI_ENABLE: u8 = 0x80;
+
+fn tbi_mode(revision: Revision, phy_status: u8) -> bool {
+    revision.version <= 6 && phy_status & TBI_ENABLE != 0
 }
 
 fn admit_revision(device: u16, pcie_control: Option<u16>, revision: Revision) -> Result<(), Error> {
