@@ -32,23 +32,46 @@ fn modelled(registers: &mut [u32], memory: &mut [u64], signalled: bool) -> Realt
     }
 }
 
-/// An empty receive acknowledges every pending event, as Linux's
-/// `rtl_ack_events` of the whole status does: the receive ring's exhaustion
+/// The acknowledgement an empty receive makes writes back the whole status
+/// it read, as Linux's `rtl_ack_events` does: the receive ring's exhaustion
 /// (RxDescUnavail, bit 4) and the receive FIFO's overflow (RxFIFOOver,
-/// bit 6) among them, so a receiver that ran out starts again.
+/// bit 6) among the events, so a receiver that ran out starts again. The
+/// 2.5G chips' status is 32 bits wide. Nothing is written when no event is
+/// pending, or when the function has left the bus and reads all ones.
 #[test]
-fn empty_receive_acknowledges_every_pending_event() {
-    for signalled in [false, true] {
-        let mut registers = vec![0u32; 64];
-        let mut memory = vec![0u64; 262_144];
-        let pending = RX_OK | LINK_CHANGE | 1 << 2 | 1 << 4 | 1 << 6;
-        registers[INTERRUPT_STATUS / 4] = u32::from(pending) << 16;
-        let mut net = modelled(&mut registers, &mut memory, signalled);
-        net.receive.initialize(true);
-        assert_eq!(net.signals(), signalled);
-        assert_eq!(net.receive(), Ok(None));
-        let written = (registers[INTERRUPT_STATUS / 4] >> 16) as u16;
-        assert_eq!(written, pending);
+fn acknowledge_writes_back_the_whole_status_at_its_width() {
+    let time = Time::default();
+    for (version, register, width, pending) in [
+        (
+            46,
+            INTERRUPT_STATUS,
+            2,
+            u32::from(RX_OK | LINK_CHANGE | 1 << 2 | 1 << 4 | 1 << 6),
+        ),
+        (61, NBASE_INTERRUPT_STATUS, 4, 0x0021_0051),
+    ] {
+        let model = Model::ready(&time);
+        let status = |value: u32| {
+            let mut s = model.state.borrow_mut();
+            s.bytes[register..register + width].copy_from_slice(&value.to_le_bytes()[..width]);
+            s.writes.clear();
+        };
+        let hardware = Hardware::new(&model, &time, revision(version), 0);
+        status(pending);
+        assert_eq!(hardware.acknowledge(), pending as u16, "{version}");
+        assert_eq!(
+            model.state.borrow().writes,
+            [(register, pending, width as u8)],
+            "{version}"
+        );
+        for quiet in [0, u32::MAX] {
+            status(quiet);
+            assert_eq!(hardware.acknowledge(), 0, "{version} {quiet:#x}");
+            assert!(
+                model.state.borrow().writes.is_empty(),
+                "{version} {quiet:#x}"
+            );
+        }
     }
 }
 

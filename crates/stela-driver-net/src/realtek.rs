@@ -771,7 +771,7 @@ impl Realtek {
         // pending received nothing more after a download's first burst. A
         // frame that arrived before the acknowledgement is in the ring.
         let hardware = Hardware::new(&self.device, &self.clock, self.revision, self.function);
-        if hardware.acknowledge(u16::MAX) & LINK_CHANGE != 0 {
+        if hardware.acknowledge() & LINK_CHANGE != 0 {
             self.link.last_phy_poll = None;
             self.update_link()?;
         }
