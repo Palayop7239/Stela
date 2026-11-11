@@ -1,3 +1,31 @@
+> [!NOTE]
+> **This is a fork of [tylertms/Stela](https://github.com/tylertms/Stela) that works on AMD Radeon support.** For releases, installs and the project itself, use upstream. Nothing here is an official Stela build.
+
+## AMD Radeon work in this fork
+
+The goal is to run Stela's Metal driver on AMD Radeon GPUs, starting with RDNA2 (Radeon RX 6000), the way the NVIDIA path works today. AMD's Linux kernel driver (amdgpu) runs in Stela's Linux environment, and Mesa's RADV Vulkan driver sits under Stela's Metal layer.
+
+The test machine has a Ryzen 7 5700X, an ASUS TUF GAMING B450-PLUS II and a Radeon RX 6650 XT. On it, macOS 27 installs and starts up to Stela's GPU check.
+
+| Step | Status |
+|---|---|
+| Metal layer accepts a RADV device (RX 6000 and newer), compiled at wave32 | Done, not yet run on hardware |
+| amdgpu compiles in Stela's Linux environment, headless | 374 of 376 sources build |
+| Kernel services amdgpu needs (PCI, DMA, IRQ, time, …) | In progress |
+| amdgpu starts on the card: firmware, PSP, first ring test | Not started |
+| RADV built next to NVK | Not started |
+| Display (kernel FPU support, display core) | Not started |
+| macOS starts on a Radeon | Not started |
+
+The work is on the [`amd-gpu-0.2`](https://github.com/Palayop7239/Stela/tree/amd-gpu-0.2) branch, which is based on v0.2.0.
+
+These fixes came out of this machine and were sent upstream:
+- [#5](https://github.com/tylertms/Stela/pull/5): the Realtek RTL8168H stopped receiving partway through a download
+- [#6](https://github.com/tylertms/Stela/pull/6): an RTL8111H was refused as a fiber (TBI) adapter
+- [#7](https://github.com/tylertms/Stela/pull/7): SPTM panicked after a warm restart
+
+---
+
 <h1 align="center">
   <img src="assets/stela-icon.png" alt="" width="96"><br>
   Stela
