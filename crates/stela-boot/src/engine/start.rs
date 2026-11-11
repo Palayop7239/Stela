@@ -1282,6 +1282,12 @@ fn open_gpus(
         Ok(None)
     };
     let firmware = firmware.clone();
+    // AMD GPUs, which no route claims yet, for the boot screen.
+    let radeons: Vec<(String, u16)> = adapters
+        .iter()
+        .filter(|adapter| adapter.vendor == stela_drivers::gpu::Vendor::Amd)
+        .map(|adapter| (format!("{}", adapter.address), adapter.device))
+        .collect();
     let claiming = host::rdtsc();
     let claimed = work.call_owned(60_000_000, move || {
         let services = services::Services::new(mmio, remappers, None, heap, tsc_hz, Vec::new())
@@ -1300,7 +1306,12 @@ fn open_gpus(
             // Each GPU that did not start, and why, or that there is none.
             use stela_boot_core::gpu_status;
             match refused.split_first() {
-                None => crate::status::warn(&gpu_status::none()),
+                None => match radeons.first() {
+                    Some((address, device)) => {
+                        crate::status::warn(&gpu_status::amd(address, *device))
+                    }
+                    None => crate::status::warn(&gpu_status::none()),
+                },
                 Some((first, rest)) => {
                     crate::status::warn(&gpu_status::refused(
                         &first.address,
@@ -2668,6 +2679,7 @@ fn start_devices(
                 usb_disks,
                 disks,
                 power,
+                notes,
             } = opened
                 .unwrap_or_else(|error| {
                     Err(refuse!("native probe admission failed: {error}", %error))
@@ -2696,6 +2708,9 @@ fn start_devices(
                     count(disks, "disk", "disks")
                 ),
             });
+            for note in &notes {
+                crate::status::info(note);
+            }
             if options.boots_macos()
                 && open_gpus(work, mmio, remappers, handoff, host_firmware, gpus)
             {

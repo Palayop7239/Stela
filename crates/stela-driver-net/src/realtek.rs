@@ -230,7 +230,65 @@ pub struct Realtek {
     pub location: String,
     /// Whether the function's vector sends the handoff's completion signal.
     signalled: bool,
+    watch: ReceiveWatch,
 }
+
+/// IntrStatus bits beyond the signalled ones: the receive ring ran out of
+/// descriptors (RxDescUnavail) and the receive FIFO overflowed (RxFIFOOver).
+const RX_EXHAUSTED: u16 = 1 << 4;
+const RX_FIFO_OVERFLOW: u16 = 1 << 6;
+/// ChipCmd's transmitter enable, alone: the receiver stopped.
+const TRANSMIT_ONLY: u8 = 0x04;
+/// How long the receive ring may stay empty after the receiver ran out of
+/// descriptors or overflowed before the receiver is restarted.
+const RECEIVE_STALL_US: u64 = 2_000_000;
+
+/// The receive path's recent history, for a receiver that stops after its
+/// ring ran out ([`Realtek::restart_receiver`]) and for the diagnostic.
+#[derive(Default)]
+struct ReceiveWatch {
+    frames: u64,
+    /// The clock at the last frame.
+    framed_at: u64,
+    /// Every IntrStatus bit seen pending.
+    seen: u16,
+    exhausted: u64,
+    overflowed: u64,
+    /// The ring ran out or the FIFO overflowed since the last frame.
+    starved: bool,
+    restarts: u64,
+}
+
+impl ReceiveWatch {
+    /// A watch from `now`, when the receiver starts: its silence counts
+    /// from there.
+    fn since(now: u64) -> Self {
+        Self {
+            framed_at: now,
+            ..Self::default()
+        }
+    }
+    fn frame(&mut self, now: u64) {
+        self.frames += 1;
+        self.framed_at = now;
+        self.starved = false;
+    }
+    fn events(&mut self, pending: u16) {
+        self.seen |= pending;
+        if pending & RX_EXHAUSTED != 0 {
+            self.exhausted += 1;
+            self.starved = true;
+        }
+        if pending & RX_FIFO_OVERFLOW != 0 {
+            self.overflowed += 1;
+            self.starved = true;
+        }
+    }
+    fn stalled(&self, now: u64) -> bool {
+        self.starved && now.wrapping_sub(self.framed_at) >= RECEIVE_STALL_US
+    }
+}
+
 impl Realtek {
     pub fn warning(&self) -> Option<Warning> {
         self.warning
@@ -281,7 +339,7 @@ impl Realtek {
             map_registers(handoff, bar, 0, bytes).map(|_| ())
         })?;
         admit_revision(function.device, pcie_link_control, revision)?;
-        if !revision.nbase() && device.read8(PHY_STATUS) & 0x80 != 0 {
+        if tbi_mode(revision, device.read8(PHY_STATUS)) {
             return Err(BlockError::Unsupported("Realtek TBI/fiber mode").into());
         }
         // rtl_alloc_irq keeps versions before 18 on INTx, which stays off.
@@ -337,7 +395,9 @@ impl Realtek {
                 function.address, revision.name, revision.xid
             ),
             signalled,
+            watch: ReceiveWatch::default(),
         };
+        net.watch = ReceiveWatch::since(Timer::now(&net.clock));
         net.receive.initialize(true);
         net.transmit.initialize(false);
         let hardware = Hardware::new(&net.device, &net.clock, revision, function.address.function);
@@ -351,6 +411,30 @@ impl Realtek {
             hardware.interrupts_on(SIGNALLED_EVENTS);
         }
         Ok(net)
+    }
+
+    /// Stop the receiver, offer the whole ring again from its base and
+    /// start it, as `rtl_hw_start` leaves it: the base address is published
+    /// again with the configuration registers unlocked. The transmitter
+    /// keeps running.
+    fn restart_receiver(&mut self) {
+        self.device.write8(COMMAND, TRANSMIT_ONLY);
+        fence(Ordering::SeqCst);
+        // A frame in flight finishes its DMA before the ring is reused.
+        let _ = Timer::delay(&self.clock, 100);
+        self.receive.restart();
+        fence(Ordering::SeqCst);
+        let base = self.receive.descriptors.physical();
+        self.device.write8(CONFIG_LOCK, CONFIG_UNLOCKED);
+        self.device.write32(RX_HIGH, (base >> 32) as u32);
+        self.device.write32(RX_LOW, base as u32);
+        self.device.write8(CONFIG_LOCK, CONFIG_LOCKED);
+        self.device.read8(COMMAND);
+        fence(Ordering::SeqCst);
+        self.device.write8(COMMAND, ENABLE);
+        self.watch.restarts += 1;
+        self.watch.starved = false;
+        self.watch.framed_at = Timer::now(&self.clock);
     }
 
     fn update_link(&mut self) -> Result<bool, LinkError> {
@@ -486,6 +570,16 @@ fn prepare_pcie_link<C: ConfigSpace>(
         clock_request(function.config(), offset, false)?;
     }
     Ok(control)
+}
+
+/// PHYstatus bit 7, which reports a TBI (fiber) interface only on the 8169
+/// family, versions 02..06: older Linux read it as TBI only there, and the
+/// pinned source has dropped TBI altogether. 8168 chips set it with their
+/// copper PHY (an ASUS board's RTL8111H does), so it is no refusal there.
+const TBI_ENABLE: u8 = 0x80;
+
+fn tbi_mode(revision: Revision, phy_status: u8) -> bool {
+    revision.version <= 6 && phy_status & TBI_ENABLE != 0
 }
 
 fn admit_revision(device: u16, pcie_control: Option<u16>, revision: Revision) -> Result<(), Error> {
@@ -740,19 +834,52 @@ impl Link for Realtek {
     }
     fn receive(&mut self) -> Result<Option<Vec<u8>>, LinkError> {
         self.update_link()?;
-        let frame = self.receive.receive();
-        if frame.is_some() || !self.signalled {
-            return Ok(frame);
+        if let Some(frame) = self.receive.receive() {
+            self.watch.frame(Timer::now(&self.clock));
+            return Ok(Some(frame));
         }
-        // rtl8169_interrupt acknowledges the events it read, so the next
-        // frame or link change raises the vector again. A frame that
-        // arrived before the acknowledgement is in the ring.
+        // rtl8169_interrupt acknowledges every event it read (rtl_ack_events
+        // of the whole status), the ring's exhaustion and FIFO overflow
+        // among them, so the next frame or link change raises the vector
+        // again. A frame that arrived before the acknowledgement is in the
+        // ring.
         let hardware = Hardware::new(&self.device, &self.clock, self.revision, self.function);
-        if hardware.acknowledge(SIGNALLED_EVENTS) & LINK_CHANGE != 0 {
+        let pending = hardware.acknowledge(u16::MAX);
+        self.watch.events(pending);
+        if pending & LINK_CHANGE != 0 {
             self.link.last_phy_poll = None;
             self.update_link()?;
         }
-        Ok(self.receive.receive())
+        if let Some(frame) = self.receive.receive() {
+            self.watch.frame(Timer::now(&self.clock));
+            return Ok(Some(frame));
+        }
+        // A receiver that ran out of descriptors or overflowed and then
+        // stays silent with the ring offered back is restarted: an RTL8168H
+        // (XID 541) was seen to receive nothing more, for minutes, after a
+        // download's first burst.
+        if self.watch.stalled(Timer::now(&self.clock)) {
+            self.restart_receiver();
+        }
+        Ok(None)
+    }
+
+    fn diagnostic(&mut self) -> String {
+        let now = Timer::now(&self.clock);
+        let (next, owned) = self.receive.position();
+        let watch = &self.watch;
+        format!(
+            "realtek frames={} last_frame_ms_ago={} seen={:#06x} exhausted={} overflowed={} restarts={} next={next} device_owned={owned}/{DESCRIPTORS} command={:#04x} status={:#06x} rx_config={:#010x}",
+            watch.frames,
+            now.wrapping_sub(watch.framed_at) / 1000,
+            watch.seen,
+            watch.exhausted,
+            watch.overflowed,
+            watch.restarts,
+            self.device.read8(COMMAND),
+            self.device.read16(INTERRUPT_STATUS),
+            self.device.read32(RX_CONFIG),
+        )
     }
 }
 

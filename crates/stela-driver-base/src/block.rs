@@ -20,7 +20,7 @@ mod shared;
 #[cfg(any(test, feature = "ram-disk"))]
 pub use layers::RamDisk;
 pub use layers::{Ahead, ReadAhead, Runs, Volatile};
-pub use shared::{Shared, Window};
+pub use shared::{QueueState, Shared, Window};
 mod profile;
 pub use profile::{ActiveCallback, CallbackActivity, CallbackCounts, CallbackStats};
 

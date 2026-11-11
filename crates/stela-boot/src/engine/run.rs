@@ -511,10 +511,14 @@ pub(super) fn run<H: Host>(
         let sliced = waiting || matches!(stop, Stop::Budget) && !budget_reached;
         let now = host::rdtsc();
         if !sliced {
+            // Diagnostic: the stall watch stays on through the stop, and the
+            // stop's reason is stored before anything after it can hang.
+            super::stop_step(format_args!("the run loop returned: {stop:?}"));
             service.report(tsc_hz);
             output::report_log_stores();
             return stop;
         }
+        crate::stall::alive(now);
         cursor.look(now);
         heartbeat.sample(machine, now, tsc_hz);
         // The heartbeat's reports wait for a quiet boot PE, as the service

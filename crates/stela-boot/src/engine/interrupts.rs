@@ -593,6 +593,11 @@ pub(crate) unsafe fn observe_descriptors() -> Descriptors {
 
 /// Report an x86 exception that is a Stela failure, never a guest event.
 pub fn fatal(frame: &Frame) -> ! {
+    // The stall watch's NMI: where this processor was, before anything
+    // that may need what it held.
+    if frame.vector == 2 {
+        crate::stall::interrupted(frame.rip, frame.rsp);
+    }
     report(frame);
     // Linux's minimum-deadline callbacks stop on `ud2` after recording why.
     if let Some(error) = stela_linux::owner::minimum_failure() {

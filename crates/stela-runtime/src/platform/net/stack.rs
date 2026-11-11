@@ -66,6 +66,20 @@ struct Phy<L> {
     approved_ipv6: Vec<Ipv6Addr>,
     rdnss: rdnss::Rdnss,
     manage_ipv6: bool,
+    counts: Counts,
+}
+
+/// The frames the link carried, for [`Stack::diagnostic`].
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    received: u64,
+    sent: u64,
+    /// Frames held back because their IPv6 source had no DAD admission.
+    gated: u64,
+    /// Frames the link refused.
+    refused: u64,
+    /// The clock, in microseconds, at the last received frame.
+    received_at: u64,
 }
 
 struct Rx<'a>(&'a [u8]);
@@ -75,6 +89,7 @@ struct Tx<'a, L> {
     frame: &'a mut Vec<u8>,
     fault: &'a mut Option<LinkError>,
     approved_ipv6: Option<&'a [Ipv6Addr]>,
+    counts: &'a mut Counts,
 }
 
 impl phy::RxToken for Rx<'_> {
@@ -96,11 +111,16 @@ impl<L: Link> phy::TxToken for Tx<'_, L> {
         {
             let source = Ipv6Addr::from(<[u8; 16]>::try_from(&frame[22..38]).unwrap());
             if !source.is_unspecified() && !approved.contains(&source) {
+                self.counts.gated += 1;
                 return result;
             }
         }
-        if let Err(error) = self.link.transmit(frame) {
-            self.fault.get_or_insert(error);
+        match self.link.transmit(frame) {
+            Ok(()) => self.counts.sent += 1,
+            Err(error) => {
+                self.counts.refused += 1;
+                self.fault.get_or_insert(error);
+            }
         }
         result
     }
@@ -120,6 +140,8 @@ impl<L: Link> Device for Phy<L> {
         match self.link.receive_reusing(&mut self.rx_frame) {
             Ok(true) => {
                 self.received = true;
+                self.counts.received += 1;
+                self.counts.received_at = now.total_micros().max(0) as u64;
                 let frame = &self.rx_frame;
                 for probe in &mut self.probes {
                     probe.duplicate |= dad::conflicts(frame, probe.address, probe.nonce);
@@ -133,6 +155,7 @@ impl<L: Link> Device for Phy<L> {
                         frame: &mut self.tx_frame,
                         fault: &mut self.fault,
                         approved_ipv6: self.manage_ipv6.then_some(self.approved_ipv6.as_slice()),
+                        counts: &mut self.counts,
                     },
                 ))
             }
@@ -150,6 +173,7 @@ impl<L: Link> Device for Phy<L> {
             frame: &mut self.tx_frame,
             fault: &mut self.fault,
             approved_ipv6: self.manage_ipv6.then_some(self.approved_ipv6.as_slice()),
+            counts: &mut self.counts,
         })
     }
 
@@ -267,6 +291,7 @@ impl<L: Link, C: Clock> Stack<L, C> {
             approved_ipv6: Vec::new(),
             rdnss: Default::default(),
             manage_ipv6: true,
+            counts: Counts::default(),
         };
         let initial = clock.now_us().map_err(NetError::Clock)?;
         let now = Instant::from_micros(
@@ -294,6 +319,93 @@ impl<L: Link, C: Clock> Stack<L, C> {
             conflicts: Vec::new(),
             probe_nonce: seed,
         })
+    }
+
+    /// The interface's state in one line, for a transfer that stalls: the
+    /// frames the link carried, the addresses and their DAD admission, the
+    /// default routes and when they lapse, the DNS servers, and each TCP
+    /// connection's state and queues.
+    pub fn diagnostic(&mut self) -> String {
+        use core::fmt::Write;
+        let now = self.now().unwrap_or(0);
+        let at = |instant: Option<Instant>| match instant {
+            None => String::from("forever"),
+            Some(instant) => {
+                let micros = instant.total_micros() - now as i64;
+                alloc::format!("{}ms", micros / 1000)
+            }
+        };
+        let counts = self.phy.counts;
+        let mut text = String::new();
+        let _ = write!(
+            text,
+            "carrier={} received={} last_received_ms_ago={} sent={} gated={} refused={} fault={:?} addresses=[",
+            self.phy.link.carrier(),
+            counts.received,
+            now.saturating_sub(counts.received_at) / 1000,
+            counts.sent,
+            counts.gated,
+            counts.refused,
+            self.phy.fault,
+        );
+        for cidr in self.iface.ip_addrs() {
+            match cidr {
+                IpCidr::Ipv6(cidr) => {
+                    let admitted = self.phy.approved_ipv6.contains(&cidr.address());
+                    let _ = write!(text, " {}{}", cidr, if admitted { "" } else { "(unadmitted)" });
+                }
+                IpCidr::Ipv4(cidr) => {
+                    let _ = write!(text, " {cidr}");
+                }
+            }
+        }
+        text.push_str(" ]");
+        let routes = self.iface.routes();
+        for (family, route) in [
+            ("ipv4", routes.get_default_ipv4_route()),
+            ("ipv6", routes.get_default_ipv6_route()),
+        ] {
+            match route {
+                Some(route) => {
+                    let _ = write!(
+                        text,
+                        " {family}_route=via {} preferred={} expires={}",
+                        route.via_router,
+                        at(route.preferred_until),
+                        at(route.expires_at)
+                    );
+                }
+                None => {
+                    let _ = write!(text, " {family}_route=none");
+                }
+            }
+        }
+        let _ = write!(
+            text,
+            " dhcpv4={} dns={:?} probes={} conflicts={} tcp=[",
+            self.config.is_some(),
+            self.dns_servers,
+            self.phy.probes.len(),
+            self.conflicts.len()
+        );
+        for (_, socket) in self.sockets.iter() {
+            if let smoltcp::socket::Socket::Tcp(socket) = socket {
+                let _ = write!(
+                    text,
+                    " {:?}:{:?}/rx{}/tx{}",
+                    socket.remote_endpoint(),
+                    socket.state(),
+                    socket.recv_queue(),
+                    socket.send_queue()
+                );
+            }
+        }
+        text.push_str(" ]");
+        let adapter = self.phy.link.diagnostic();
+        if !adapter.is_empty() {
+            let _ = write!(text, " adapter=[{adapter}]");
+        }
+        text
     }
 
     pub fn link_mut(&mut self) -> &mut L {

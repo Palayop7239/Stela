@@ -283,7 +283,8 @@ impl Service {
             }
         }
         if due(LOGS, true, next) {
-            if now.wrapping_sub(*log_flushed) >= *tsc_hz {
+            // Diagnostic: every 20 ms, so the stores follow the log closely.
+            if now.wrapping_sub(*log_flushed) >= *tsc_hz / 50 {
                 output::flush_due();
                 *log_flushed = host::rdtsc();
             } else {

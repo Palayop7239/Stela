@@ -139,6 +139,8 @@ fn flush_ranges(ranges: impl Iterator<Item = Range<u64>>) {
 /// Flush and acknowledge the latest request if this processor joined and
 /// has not flushed it yet. Cheap when nothing is requested: two loads.
 pub(crate) fn service() {
+    // Every lock spin passes here: the place to see a frozen boot from.
+    crate::stall::check("lock spin");
     let requested = PROCESSORS.requested();
     if requested == 0 {
         return;

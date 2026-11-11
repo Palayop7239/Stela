@@ -364,6 +364,8 @@ pub fn progress_fraction(detail: &str, completed: u64, total: u64) {
 /// firmware timer's callback: it allocates nothing and skips a frame while
 /// the state or the console is in use.
 pub fn tick() {
+    // Drivers' waits pass here (`stela_drivers::on_wait`).
+    crate::stall::check("driver wait");
     output::pump_serial();
     with(|state| {
         let frame = state.tsc_hz / 8;

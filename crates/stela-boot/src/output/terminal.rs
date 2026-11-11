@@ -57,8 +57,24 @@ fn print_stack() {
 /// # Safety
 /// `stack`'s page reads from `stack` on.
 pub(crate) unsafe fn print_stack_at(stack: *const u64) {
+    let _ = write!(Serial, "STELA STACK");
+    // SAFETY: the caller's.
+    unsafe {
+        stack_offsets(stack, 32, |offset| {
+            let _ = write!(Serial, " {offset:#x}");
+        })
+    };
+    let _ = writeln!(Serial);
+}
+
+/// The first `shown` words from `stack` to the end of its page, at most
+/// 512, that lie in this image, each as an offset from its base: the return
+/// addresses among them name the callers, as `stela.pdb` resolves them.
+///
+/// # Safety
+/// `stack`'s page reads from `stack` on.
+pub(crate) unsafe fn stack_offsets(stack: *const u64, shown: usize, mut each: impl FnMut(u64)) {
     const PAGE: usize = 4096;
-    const SHOWN: usize = 32;
     unsafe extern "C" {
         static __ImageBase: u8;
     }
@@ -74,16 +90,12 @@ pub(crate) unsafe fn print_stack_at(stack: *const u64) {
         )
     };
     let words = (PAGE - stack.addr() % PAGE) / 8;
-    let offsets = (0..words.min(512))
+    (0..words.min(512))
         // SAFETY: the caller's.
         .map(|word| unsafe { stack.add(word).read() }.wrapping_sub(base))
         .filter(|&offset| offset < bytes)
-        .take(SHOWN);
-    let _ = write!(Serial, "STELA STACK");
-    for offset in offsets {
-        let _ = write!(Serial, " {offset:#x}");
-    }
-    let _ = writeln!(Serial);
+        .take(shown)
+        .for_each(&mut each);
 }
 
 pub(crate) fn panic(info: &PanicInfo<'_>) -> ! {

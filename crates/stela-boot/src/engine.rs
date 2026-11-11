@@ -938,16 +938,31 @@ fn run_machine<H: Host>(
         profile_lifetime_maxima(timing, handoff.tsc_hz, "guest-stop");
     }
     let mut service = service::take().expect("the run's service");
+    stop_step(format_args!("host services taken"));
     if options.profile {
         service.power().disks().report_callbacks(handoff.tsc_hz);
     }
     let started = output::now();
+    stop_step(format_args!("stopping host services: NOR store, GPU gates"));
     service.stop();
+    stop_step(format_args!("host services stopped"));
     let times = StopTimes {
         service: output::millis_since(started),
         ..StopTimes::default()
     };
     finish(&mut machine, stop, seconds, options, times, service.power())
+}
+
+/// Diagnostic: how far the stop after a run came, on the screen and in the
+/// log, stored before the next step can hang.
+pub(super) fn stop_step(step: core::fmt::Arguments<'_>) {
+    // Each step is progress: the stall watch measures silence from here.
+    crate::stall::alive(output::now());
+    let line = format!("STOP STEP {step}");
+    output::arguments(format_args!("{line}\n"));
+    crate::console::reclaim();
+    crate::status::info(&line);
+    output::flush_log();
 }
 
 fn finish<H: Host>(
@@ -962,8 +977,10 @@ fn finish<H: Host>(
     // An orderly stop has nothing to debug: its registers and frames stay
     // out of the log unless `--profile` asks for them.
     let full = options.profile || !matches!(&stop, Stop::Reset(reset) if orderly(reset));
+    stop_step(format_args!("reports, full={full}"));
     parallel::report_source_observations(machine);
     survey_report(machine);
+    stop_step(format_args!("taking what the devices left"));
     let drained = machine.devices.with(Drained::take);
     unmodeled_report(machine, drained.unmodeled);
     // Machine answers are counted per access; coprocessor requests are
@@ -1004,6 +1021,7 @@ fn finish<H: Host>(
         machine_report(machine);
     }
     times.report = output::millis_since(started);
+    stop_step(format_args!("reports done"));
     match stop {
         Stop::Idle => {
             output::arguments(format_args!(
@@ -1042,8 +1060,10 @@ fn finish<H: Host>(
             pipelines::write();
             let pipelines = output::millis_since(started);
             let started = output::now();
+            stop_step(format_args!("writing translations"));
             translations::write();
             let translations = output::millis_since(started);
+            stop_step(format_args!("translations written in {translations} ms"));
             let hold = match reset.transition {
                 Transition::Restart | Transition::PowerOff => {
                     stela_boot_core::shutdown::stop_hold_seconds(
@@ -1174,6 +1194,16 @@ fn machine_report<H: Host>(machine: &mut Machine<H, parallel::Board>) {
 /// holds: storing a log from here would wait on itself.
 pub(crate) fn inside_host_drivers() -> bool {
     storage::host_drivers_held_here()
+}
+
+/// Whether any core is inside the host drivers now.
+pub(crate) fn host_drivers_taken() -> bool {
+    storage::host_drivers_taken()
+}
+
+/// Where the core inside the host drivers took their lock, while one is.
+pub(crate) fn host_drivers_site() -> Option<&'static core::panic::Location<'static>> {
+    storage::host_drivers_site()
 }
 
 /// Unload the GPUs' firmware before a fatal stop, where one can

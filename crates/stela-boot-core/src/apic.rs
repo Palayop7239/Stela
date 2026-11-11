@@ -36,6 +36,7 @@ const ICR_PENDING: u32 = 1 << 12;
 const ICR_LEVEL_ASSERT: u32 = 1 << 14;
 const ICR_INIT: u32 = 5 << 8;
 const ICR_STARTUP: u32 = 6 << 8;
+const ICR_NMI: u32 = 4 << 8;
 /// The INIT settling and STARTUP acceptance delays of the MP specification,
 /// for processors that need them.
 const INIT_WAIT_US: u64 = 10_000;
@@ -355,6 +356,19 @@ impl Apic {
         }
         self.wait_delivery(tsc_hz)?;
         self.command(destination, u32::from(vector))
+    }
+
+    /// Send a non-maskable interrupt to the processor with APIC ID
+    /// `destination`, which takes it with interrupts disabled as well; the
+    /// level bit is set, as Intel SDM Vol. 3A 11.6.1 asks of every delivery
+    /// mode but INIT de-assert. Acceptance only, as [`Self::notify`].
+    ///
+    /// # Safety
+    /// The destination's IDT routes the NMI to a handler of its own. The
+    /// caller exclusively owns the local ICR with interrupts disabled.
+    pub unsafe fn nmi(&self, destination: u32, tsc_hz: u64) -> Result<(), StartupError> {
+        self.wait_delivery(tsc_hz)?;
+        self.command(destination, ICR_NMI | ICR_LEVEL_ASSERT)
     }
 
     /// Mask the legacy PICs, enable the APIC with `spurious` as its

@@ -49,6 +49,8 @@ pub struct Remote {
     /// Whether [`Remote::pump`] reads ahead: from a read that succeeded
     /// until a read-ahead fails.
     ahead: bool,
+    /// When the network's state was last logged ([`Self::network_state`]).
+    reported: u64,
 }
 
 impl Remote {
@@ -84,7 +86,19 @@ impl Remote {
             range: None,
             ranges: 0,
             ahead: false,
+            reported: output::now(),
         })
+    }
+
+    /// Log the network's state (`Stack::diagnostic`) and `why`.
+    fn network_state(&mut self, why: &str) {
+        self.reported = output::now();
+        let state = self.network.0.borrow_mut().diagnostic();
+        output::arguments(format_args!(
+            "REMOTE IMAGE network {why}: buffered={} end={} {state}\n",
+            self.buffer.len(),
+            self.end()
+        ));
     }
 
     fn end(&self) -> u64 {
@@ -155,6 +169,7 @@ impl Remote {
                 output::arguments(format_args!(
                     "REMOTE IMAGE range at {before} failed ({failures}/{ATTEMPTS}): {error}\n"
                 ));
+                self.network_state("after the failure");
                 if failures == ATTEMPTS {
                     return Err(error);
                 }
@@ -179,10 +194,20 @@ impl Remote {
     /// buffered, opening the next range when one ends. A failure leaves the
     /// next read to retry.
     pub fn pump(&mut self) {
-        if self.ahead && self.buffer.len() < AHEAD && self.end() < self.len && self.step().is_err()
-        {
-            self.stop();
-            self.ahead = false;
+        // Diagnostic: the network's state every 10 s while the image is open.
+        if output::millis_since(self.reported) >= 10_000 {
+            self.network_state("periodic");
+        }
+        if self.ahead && self.buffer.len() < AHEAD && self.end() < self.len {
+            if let Err(error) = self.step() {
+                output::arguments(format_args!(
+                    "REMOTE IMAGE read-ahead at {} failed: {error}\n",
+                    self.end()
+                ));
+                self.network_state("after the read-ahead failure");
+                self.stop();
+                self.ahead = false;
+            }
         }
     }
 }

@@ -38,6 +38,16 @@ pub(super) struct Requests {
     pub(super) busy_since: u64,
 }
 
+/// A [`Shared`] disk's queue at one look ([`Shared::queue`]).
+#[derive(Clone, Copy, Debug)]
+pub struct QueueState {
+    pub waiting: usize,
+    pub running: usize,
+    /// The oldest running command's kind, and the counter
+    /// ([`crate::Clock::ticks`]) when it was submitted.
+    pub oldest: Option<(Direction, u64)>,
+}
+
 /// A device command and its first ticket and read length. Additional tickets
 /// carry their offset and length in the read's data. What the accounting
 /// counts the command as, and when its first ticket was submitted.
@@ -422,6 +432,28 @@ impl Shared {
             return None;
         }
         Held(&self.0).requests().stats.callbacks
+    }
+
+    /// What the disk's queue holds now: the commands waiting and running,
+    /// and the oldest running one's kind and submission counter. `None`
+    /// while an owner holds the disk, without waiting for it: a disk whose
+    /// command never ends is what this looks for.
+    pub fn queue(&self) -> Option<QueueState> {
+        self.0
+            .held
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()?;
+        let mut disk = Held(&self.0);
+        let requests = disk.requests();
+        Some(QueueState {
+            waiting: requests.waiting.len(),
+            running: requests.running.len(),
+            oldest: requests
+                .running
+                .iter()
+                .min_by_key(|merged| merged.submitted)
+                .map(|merged| (merged.accounted.0, merged.submitted)),
+        })
     }
 
     /// The disk, once no other owner is using it.

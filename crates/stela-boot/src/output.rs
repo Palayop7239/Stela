@@ -24,7 +24,7 @@ use stela_drivers::block::{BlockDevice, BlockError, Submission};
 use stela_runtime::pc::boot_log::{PENDING_BYTES, Pending, Unkept, Writer};
 
 mod terminal;
-pub(crate) use terminal::{panic, print_stack_at};
+pub(crate) use terminal::{panic, print_stack_at, stack_offsets};
 
 /// One engine-wide value. The mount runs on one processor and its handlers
 /// only print; every access is a `try_borrow`, so output that arrives while
@@ -489,9 +489,10 @@ impl Sink {
     }
 }
 
-/// Seconds between the machine state's log stores while the engine runs:
-/// ext4's default journal commit interval. A stop stores at once.
-const MACHINE_FLUSH_SECONDS: u64 = 5;
+/// Seconds between the machine state's log stores while the engine runs.
+/// Diagnostic: none, so each store begins as the last ends, and a machine
+/// that stops whole leaves its last moments on the disk.
+const MACHINE_FLUSH_SECONDS: u64 = 0;
 /// Seconds between the USB log's stores while the engine runs.
 const USB_FLUSH_SECONDS: u64 = 10;
 
@@ -549,6 +550,14 @@ static LINE_START: AtomicBool = AtomicBool::new(true);
 /// at `tsc_hz`.
 pub fn set_clock(tsc_hz: u64) {
     TSC_HZ.store(tsc_hz, Ordering::Relaxed);
+}
+
+/// The rate [`set_clock`] gave, or 0 before it. Code the engine's image also
+/// runs reads the rate here: that image is a copy taken before
+/// `firmware::tsc_hz` cached it, so the call would search the firmware's
+/// tables again, through the UEFI system table the engine's roots do not map.
+pub fn clock_hz() -> u64 {
+    TSC_HZ.load(Ordering::Relaxed)
 }
 
 /// `[  12.345] `: the seconds since the PC started, as the kernel's own
@@ -772,7 +781,19 @@ fn flush_where(due: impl Fn(&Sink) -> bool, wait: bool) {
         return;
     }
     let mut failed = Vec::new();
+    let mut stuck = None;
     with_sinks(false, |sinks| {
+        // The machine state's store that has not ended for long: the disk
+        // under it may never answer, and the log then reaches no one.
+        let hz = TSC_HZ.load(Ordering::Relaxed);
+        if hz != 0 && !MIRROR.load(Ordering::Relaxed) {
+            stuck = sinks
+                .iter()
+                .filter(|sink| sink.kind == Log::Machine)
+                .filter_map(|sink| sink.began)
+                .map(|began| rdtsc().saturating_sub(began) / hz)
+                .find(|&seconds| seconds >= STUCK_STORE_SECONDS);
+        }
         // A log whose store is in progress takes new bytes at its next one.
         let is_due = |sink: &Sink| !sink.writer.storing() && due(sink);
         // Take the record's new bytes while no processor adds to it, then
@@ -808,6 +829,17 @@ fn flush_where(due: impl Fn(&Sink) -> bool, wait: bool) {
             Ordering::Release,
         );
     });
+    if let Some(seconds) = stuck
+        && !MIRROR.swap(true, Ordering::Relaxed)
+    {
+        crate::console::reclaim();
+        crate::status::info(&alloc::format!(
+            "STALL the boot log's store has not ended in {seconds} s; the log's lines follow here"
+        ));
+        arguments(format_args!(
+            "STALL the boot log's store has not ended in {seconds} s; mirroring the log to the screen\n"
+        ));
+    }
     for (kind, error) in failed {
         arguments(format_args!("BOOT LOG refusal: {error}\n"));
         if kind == Log::Machine {
@@ -856,6 +888,41 @@ pub fn arguments(args: fmt::Arguments<'_>) {
     if exclusive(|| Output.write_fmt(args)).is_none() {
         let _ = Serial.write_fmt(args);
     }
+    if MIRROR.load(Ordering::Relaxed) {
+        mirror(args);
+    }
+}
+
+/// How long the machine state's log store may run before the log goes to
+/// the screen as well ([`MIRROR`]). The installer's erase of the whole disk
+/// held one store behind its discards for more than 15 s, so less than a
+/// minute is no sign of a disk that stopped answering.
+const STUCK_STORE_SECONDS: u64 = 60;
+/// The log's lines go to the screen too: its store stopped ending, so the
+/// disk under it may never take them.
+static MIRROR: AtomicBool = AtomicBool::new(false);
+/// One processor draws mirrored lines at a time; another's are skipped.
+static MIRRORING: AtomicBool = AtomicBool::new(false);
+/// The lines worth the screen's room: the guest's output and the host's
+/// disk, storage-model, USB and beat reports.
+const MIRRORED: [&str; 10] = [
+    "GUEST|", "ANS ", "HOST DISK", "HOST SERVICE", "BEAT ", "STALL", "USB ", "BOOT LOG", "STELA",
+    "DEVICE LOCK",
+];
+
+/// Draw `args`'s lines that [`MIRRORED`] names on the screen.
+fn mirror(args: fmt::Arguments<'_>) {
+    if MIRRORING.swap(true, Ordering::Acquire) {
+        return;
+    }
+    let mut text = crate::stall::Line::new();
+    let _ = text.write_fmt(args);
+    for line in text.as_str().split('\n') {
+        if MIRRORED.iter().any(|prefix| line.starts_with(prefix)) {
+            crate::status::info(line);
+        }
+    }
+    MIRRORING.store(false, Ordering::Release);
 }
 
 /// Report `code` on the hypervisor exit port, which may end a virtual

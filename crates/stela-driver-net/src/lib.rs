@@ -117,6 +117,11 @@ pub trait Link {
     fn due_us(&self) -> Option<u64> {
         None
     }
+    /// The adapter's receive state in one line, for a stalled transfer;
+    /// empty from an adapter that keeps none.
+    fn diagnostic(&mut self) -> String {
+        String::new()
+    }
 }
 
 mod timing;

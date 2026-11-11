@@ -55,6 +55,7 @@ mod pci_io;
 mod random;
 mod selection;
 mod serial;
+mod stall;
 mod status;
 mod storage;
 mod system;

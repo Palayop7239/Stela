@@ -46,6 +46,20 @@ impl Ring {
             }
         }
     }
+    /// Offer every descriptor again from the ring's first: the receiver
+    /// restarts at its base, as after [`Self::initialize`].
+    pub fn restart(&mut self) {
+        self.next = 0;
+        self.initialize(true);
+    }
+    /// Where the next frame is looked for, and how many descriptors the
+    /// device owns.
+    pub fn position(&self) -> (usize, usize) {
+        let owned = (0..DESCRIPTORS)
+            .filter(|index| self.descriptors.read::<u32>(index * DESCRIPTOR) & OWN != 0)
+            .count();
+        (self.next, owned)
+    }
     fn offer(&mut self, index: usize) {
         self.descriptors.write(index * DESCRIPTOR + 4, 0u32);
         fence(Ordering::Release);

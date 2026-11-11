@@ -46,6 +46,9 @@ const NO_LEASE: &str = "No automatic network address. Connect Ethernet or Wi-Fi 
 pub struct Links {
     pub devices: Vec<Adapter>,
     pub root: u64,
+    /// The network controllers that did not come up, each with why, which
+    /// the screen names when no adapter does.
+    pub failed: Vec<String>,
 }
 
 impl Drop for Links {
@@ -125,6 +128,11 @@ impl Link for RootLink {
     }
     fn due_us(&self) -> Option<u64> {
         self.device.due_us()
+    }
+    fn diagnostic(&mut self) -> String {
+        // SAFETY: as in `carrier`.
+        let _root = unsafe { RestoreRoot::enter(self.root) };
+        self.device.diagnostic()
     }
 }
 
@@ -227,8 +235,14 @@ impl HostNetwork {
                 }
             }
         }
-        if failures.is_empty() {
+        if failures.is_empty() && links.failed.is_empty() {
             Err(refuse!("{NO_ADAPTER}", NO_ADAPTER))
+        } else if failures.is_empty() {
+            Err(refuse!(
+                "{NO_ADAPTER} Not started: {failed}",
+                NO_ADAPTER,
+                failed = links.failed.join("; ")
+            ))
         } else {
             Err(refuse!(
                 "{NO_LEASE} {failures}",
@@ -347,6 +361,11 @@ impl HostNetwork {
 
     pub fn close(&mut self, transfer: Transfer) {
         self.stack.close(transfer);
+    }
+
+    /// The stack's state in one line (`Stack::diagnostic`).
+    pub fn diagnostic(&mut self) -> String {
+        self.stack.diagnostic()
     }
 
     /// Waits up to `micros` for the adapter's next frame (`Stack::wait`).

@@ -143,6 +143,7 @@ impl Lan {
             approved_ipv6: Vec::new(),
             rdnss: Default::default(),
             manage_ipv6: false,
+            counts: Counts::default(),
         };
         let config = InterfaceConfig::new(HardwareAddress::Ethernet(EthernetAddress(SERVER)));
         let mut iface = Interface::new(config, &mut server, Instant::ZERO);

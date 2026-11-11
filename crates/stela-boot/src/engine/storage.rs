@@ -226,6 +226,15 @@ fn lock_host_drivers() -> u64 {
 /// holds every other core's driver call, the input service's included.
 static HOST_DRIVERS_HELD: AtomicU64 = AtomicU64::new(0);
 static HOST_DRIVERS_HOLDER: AtomicPtr<Location<'static>> = AtomicPtr::new(ptr::null_mut());
+/// Where the core that holds [`HOST_DRIVERS`] now took it; null while no
+/// core does. A stalled boot's report names it (`crate::stall`).
+static HOST_DRIVERS_SITE: AtomicPtr<Location<'static>> = AtomicPtr::new(ptr::null_mut());
+
+/// Where the host drivers' lock was taken, while a core holds it.
+pub(super) fn host_drivers_site() -> Option<&'static Location<'static>> {
+    // SAFETY: only `RestoreRoot::enter_locked` stores, a `&'static Location`.
+    unsafe { HOST_DRIVERS_SITE.load(Ordering::Relaxed).as_ref() }
+}
 
 /// The time cores waited for the host drivers since the last report, in
 /// total and at most, in microseconds, and the longest hold, with where
@@ -352,12 +361,14 @@ impl RestoreRoot {
         unsafe { asm!("mov cr3, {}", in(reg) root, options(nostack, preserves_flags)) };
         let entered = super::host::rdtsc();
         record(DiskPart::Root, entered.wrapping_sub(switching));
+        let site = Location::caller();
+        HOST_DRIVERS_SITE.store(ptr::from_ref(site).cast_mut(), Ordering::Relaxed);
         Self {
             root: previous,
             flags,
             tagged,
             entered,
-            site: Location::caller(),
+            site,
             _local: core::marker::PhantomData,
         }
     }
@@ -381,6 +392,7 @@ impl Drop for RestoreRoot {
         if HOST_DRIVERS_HELD.fetch_max(held, Ordering::Relaxed) < held {
             HOST_DRIVERS_HOLDER.store(ptr::from_ref(self.site).cast_mut(), Ordering::Relaxed);
         }
+        HOST_DRIVERS_SITE.store(ptr::null_mut(), Ordering::Relaxed);
         HOST_DRIVERS.store(false, Ordering::Release);
         // SAFETY: only IF was changed by enter().
         unsafe {
@@ -781,6 +793,23 @@ impl HostDisks {
     pub fn report(&self, tsc_hz: u64) {
         let micros = |ticks: u64| u128::from(ticks) * 1_000_000 / u128::from(tsc_hz.max(1));
         for (serial, disk) in &self.disks {
+            // Looked at before the stats, which wait for the disk's lock.
+            let queue = match disk.queue() {
+                Some(queue) => {
+                    let mut text = format!(" queue={}/{}", queue.running, queue.waiting);
+                    if let Some((direction, submitted)) = queue.oldest {
+                        let age = super::host::rdtsc().saturating_sub(submitted);
+                        text.push_str(&format!(
+                            " oldest={}@{}ms",
+                            direction.name(),
+                            micros(age) / 1000
+                        ));
+                    }
+                    text
+                }
+                None => String::from(" queue=held"),
+            };
+            output::arguments(format_args!("HOST DISK QUEUE serial={serial}{queue}\n"));
             let stats = disk.stats();
             let mut line = format!("HOST DISK IO serial={serial}");
             for direction in Direction::ALL {
@@ -1066,9 +1095,12 @@ pub unsafe fn open(
         root,
     };
     let links = super::network::Links {
+        failed: network_failures(&devices),
         devices: core::mem::take(&mut devices.nics),
         root,
     };
+    // Before the USB hosts move to their owner below.
+    let usb_trouble = usb_failures(&devices);
     let usb = super::usb::HostUsb::new(
         core::mem::take(&mut devices.usb_hosts),
         core::mem::take(&mut devices.usb4_hosts),
@@ -1131,6 +1163,9 @@ pub unsafe fn open(
             refuse!("partition {guid}: {error}", %guid, %error)
         }
     };
+    // What the screen says about the USB's own partitions left out: the log
+    // that would hold the reasons may be the one left out.
+    let mut notes = Vec::new();
     let mut opened = loop {
         named.truncate(required);
         named.extend(optional.iter().map(|(named, _)| named.clone()));
@@ -1138,10 +1173,14 @@ pub unsafe fn open(
             Ok(opened) => break opened,
             Err((at, error)) if at >= required => {
                 let (named, which) = optional.remove(at - required);
+                let why = describe(&named, error);
                 output::arguments(format_args!(
-                    "HOST PARTITION {} left out: {}\n",
-                    which.role(),
-                    describe(&named, error)
+                    "HOST PARTITION {} left out: {why}\n",
+                    which.role()
+                ));
+                notes.push(format!(
+                    "The USB's {} is left out: {why}.{usb_trouble}",
+                    which.role()
                 ));
             }
             Err((at, error)) => return Err(describe(&named[at], error)),
@@ -1257,7 +1296,98 @@ pub unsafe fn open(
         usb_disks,
         disks: host_disks,
         power: core::mem::take(&mut devices.power),
+        notes,
     })
+}
+
+/// The network controllers the scan found that did not come up, each with
+/// why: a driver's failure, no driver for it, or, with no adapter up at all,
+/// no driver taking it. The screen names them when the boot has no network,
+/// since the log that holds them may not reach the USB.
+fn network_failures(devices: &stela_drivers::probe::Devices) -> Vec<String> {
+    const NETWORK: &[u8] = &[0x02];
+    let mut lines: Vec<String> = devices
+        .failures
+        .iter()
+        .filter(|(address, _)| devices.scanned_as(*address, NETWORK))
+        .map(|(address, error)| format!("{address}: {error}"))
+        .chain(
+            devices
+                .unsupported
+                .iter()
+                .filter(|(_, class, _)| class.starts_with(NETWORK))
+                .map(|(address, _, why)| format!("{address}: {why}")),
+        )
+        .collect();
+    if devices.nics.is_empty() {
+        let found = devices
+            .scanned
+            .iter()
+            .filter(|(_, class)| class.starts_with(NETWORK))
+            .map(|(address, _)| *address);
+        let mut any = false;
+        for address in found {
+            any = true;
+            if !devices.failures.iter().any(|(at, _)| *at == address)
+                && !devices.unsupported.iter().any(|(at, _, _)| *at == address)
+            {
+                lines.push(format!("{address}: found, and no driver attached it"));
+            }
+        }
+        if !any {
+            lines.push(String::from("the PCI scan found no network controller"));
+        }
+    }
+    lines
+}
+
+/// Why the USB's own partitions may be missing, for the screen: how many
+/// xHCI controllers the scan found and how many run, how many USB disks
+/// came up, and the USB controllers, devices and interfaces that did not,
+/// at most a few.
+fn usb_failures(devices: &stela_drivers::probe::Devices) -> String {
+    const XHCI: &[u8] = &[0x0c, 0x03, 0x30];
+    let found = devices
+        .scanned
+        .iter()
+        .filter(|(_, class)| class.starts_with(XHCI))
+        .count();
+    let disks = devices
+        .disks
+        .iter()
+        .filter(|disk| disk.identity().transport == stela_drivers::block::Transport::Usb)
+        .count();
+    let lines: Vec<String> = devices
+        .failures
+        .iter()
+        .filter(|(address, _)| devices.scanned_as(*address, XHCI))
+        .map(|(address, error)| format!("{address}: {error}"))
+        .chain(
+            devices
+                .platform_failures
+                .iter()
+                .map(|(location, error)| format!("{location}: {error}")),
+        )
+        .chain(devices.usb_failures.iter().map(|(location, error)| {
+            format!("{location}: {}", stela_drivers::usb::xhci::explain(error))
+        }))
+        .chain(
+            devices
+                .usb_unused
+                .iter()
+                .map(|(location, why)| format!("{location} unused: {why}")),
+        )
+        .take(4)
+        .collect();
+    let mut text = format!(
+        " USB: {found} xHCI found, {} running, {disks} USB disks",
+        devices.usb_hosts.len()
+    );
+    if !lines.is_empty() {
+        text.push_str("; ");
+        text.push_str(&lines.join("; "));
+    }
+    text
 }
 
 /// A partition [`open`] leaves out when it cannot be opened.
@@ -1302,6 +1432,8 @@ pub struct Opened {
     pub usb_disks: alloc::vec::Vec<Box<dyn BlockDevice>>,
     /// Every disk taken above, for its shutdown notice.
     pub disks: HostDisks,
+    /// Lines for the screen: the USB's own partitions left out, and why.
+    pub notes: Vec<String>,
 }
 
 /// The host's input devices and the loader root their registers and DMA
